@@ -241,3 +241,46 @@ output "cloudfront_staging_domain" {
 output "cloudfront_production_domain" {
   value = aws_cloudfront_distribution.production.domain_name
 }
+# CloudWatch - CPU alta em Staging
+resource "aws_cloudwatch_metric_alarm" "staging_cpu_high" {
+  alarm_name          = "lacrei-staging-cpu-high"
+  alarm_description   = "Alerta quando a CPU de Staging fica acima de 80%"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 80
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    InstanceId = aws_instance.staging.id
+  }
+
+  tags = {
+    Environment = "Staging"
+  }
+}
+
+# CloudWatch - CPU em Prod
+resource "aws_cloudwatch_metric_alarm" "production_cpu_high" {
+  alarm_name          = "lacrei-production-cpu-high"
+  alarm_description   = "Alerta quando a CPU de Prod fica acima de 80%"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 80
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    InstanceId = aws_instance.production.id
+  }
+
+  tags = {
+    Environment = "Production"
+  }
+}
