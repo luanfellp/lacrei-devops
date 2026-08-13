@@ -22,30 +22,36 @@ resource "aws_key_pair" "lacrei" {
   }
 }
 
+# Endereços de origem do CloudFront
+data "aws_ec2_managed_prefix_list" "cloudfront" {
+  name = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
 # 1. Security Group
 resource "aws_security_group" "lacrei_sg" {
   name        = "lacrei-devops-sg"
   description = "Permite trafego web e acesso SSH restrito"
 
-  # Libera HTTP (Para o desafio, usaremos a 80, mas você documentará o HTTPS/443 depois)
+  # A aplicação recebe HTTP somente do CloudFront.
+  # O HTTPS termina no CloudFront.
   ingress {
-    description = "HTTP Web Traffic"
-    from_port   = 80
-    to_port     = 80
+    description     = "HTTP somente via CloudFront"
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]
+  }
+
+  # Temporário: usado pelo GitHub Actions para deploy via SSH
+  ingress {
+    description = "SSH Acess"
+    from_port   = 22
+    to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Libera SSH - ATENÇÃO: Para o desafio, ideal é restringir ao IP do GitHub Actions ou seu IP
-  ingress {
-    description = "SSH Access"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # Troque para o seu IP real depois, ex: "203.0.113.0/32"
-  }
-
-  # Egress liberado para baixar atualizações e imagens Docker
+  # Saída para atualizações e download de imagens Docker
   egress {
     from_port   = 0
     to_port     = 0
@@ -102,7 +108,7 @@ resource "aws_instance" "production" {
 
   vpc_security_group_ids = [aws_security_group.lacrei_sg.id]
 
-  # Adicione o nome da sua chave SSH (Key Pair) já criada na AWS
+  # Adicione Key Pair
   key_name = aws_key_pair.lacrei.key_name
 
   user_data = local.install_docker
