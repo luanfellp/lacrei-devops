@@ -7,12 +7,10 @@ terraform {
   }
 }
 
-# Região da AWS
 provider "aws" {
   region = "us-east-1"
 }
 
-# Chave SSH
 resource "aws_key_pair" "lacrei" {
   key_name   = "lacrei-devops-key"
   public_key = file("${path.module}/aws.pub")
@@ -22,18 +20,15 @@ resource "aws_key_pair" "lacrei" {
   }
 }
 
-# Endereços de origem do CloudFront
 data "aws_ec2_managed_prefix_list" "cloudfront" {
   name = "com.amazonaws.global.cloudfront.origin-facing"
 }
 
-# 1. Security Group
 resource "aws_security_group" "lacrei_sg" {
   name        = "lacrei-devops-sg"
   description = "Permite trafego web e acesso SSH restrito"
 
-  # A aplicação recebe HTTP somente do CloudFront.
-  # O HTTPS termina no CloudFront.
+  # O HTTPS termina no CloudFront. A EC2 recebe HTTP somente dele.
   ingress {
     description     = "HTTP somente via CloudFront"
     from_port       = 80
@@ -42,7 +37,7 @@ resource "aws_security_group" "lacrei_sg" {
     prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]
   }
 
-  # Temporário: usado pelo GitHub Actions para deploy via SSH
+  # Necessário para o deploy atual via GitHub Actions.
   ingress {
     description = "SSH Acess"
     from_port   = 22
@@ -51,7 +46,6 @@ resource "aws_security_group" "lacrei_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Saída para atualizações e download de imagens Docker
   egress {
     from_port   = 0
     to_port     = 0
@@ -60,10 +54,9 @@ resource "aws_security_group" "lacrei_sg" {
   }
 }
 
-# 2. Busca a AMI mais recente do Ubuntu 24.04 LTS
 data "aws_ami" "ubuntu" {
   most_recent = true
-  owners      = ["099720109477"] # Canonical
+  owners      = ["099720109477"]
 
   filter {
     name   = "name"
@@ -71,7 +64,6 @@ data "aws_ami" "ubuntu" {
   }
 }
 
-# 3. Script para instalar o Docker automaticamente na inicialização (User Data)
 locals {
   install_docker = <<-EOF
     #!/bin/bash
@@ -83,17 +75,13 @@ locals {
   EOF
 }
 
-# 4. Staging EC2
 resource "aws_instance" "staging" {
   ami           = data.aws_ami.ubuntu.id
-  instance_type = "t2.micro" # Free tier
+  instance_type = "t2.micro"
 
   vpc_security_group_ids = [aws_security_group.lacrei_sg.id]
-
-  # Adicione o nome da sua chave SSH (Key Pair) já criada na AWS
-  key_name = aws_key_pair.lacrei.key_name
-
-  user_data = local.install_docker
+  key_name               = aws_key_pair.lacrei.key_name
+  user_data              = local.install_docker
 
   tags = {
     Name        = "Lacrei-Staging"
@@ -101,17 +89,13 @@ resource "aws_instance" "staging" {
   }
 }
 
-# 5. Prod EC2
 resource "aws_instance" "production" {
   ami           = data.aws_ami.ubuntu.id
-  instance_type = "t2.micro" # Free tier
+  instance_type = "t2.micro"
 
   vpc_security_group_ids = [aws_security_group.lacrei_sg.id]
-
-  # Adicione Key Pair
-  key_name = aws_key_pair.lacrei.key_name
-
-  user_data = local.install_docker
+  key_name               = aws_key_pair.lacrei.key_name
+  user_data              = local.install_docker
 
   tags = {
     Name        = "Lacrei-Production"
@@ -119,30 +103,16 @@ resource "aws_instance" "production" {
   }
 }
 
-# 6. Outputs para mostrar os IPs no terminal após a criação
-output "ip_staging" {
-  value       = aws_instance.staging.public_ip
-  description = "IP Publico do ambiente de Staging"
-}
-
-output "ip_production" {
-  value       = aws_instance.production.public_ip
-  description = "IP Publico do ambiente de Producao"
-}
-
-# Certificado ACM já emitido
 data "aws_acm_certificate" "lacrei" {
   domain      = "api.luanmoura.com"
   statuses    = ["ISSUED"]
   most_recent = true
 }
 
-# Cache desabilitado para a API
 data "aws_cloudfront_cache_policy" "caching_disabled" {
   name = "Managed-CachingDisabled"
 }
 
-# CloudFront - Staging
 resource "aws_cloudfront_distribution" "staging" {
   enabled         = true
   is_ipv6_enabled = true
@@ -171,8 +141,7 @@ resource "aws_cloudfront_distribution" "staging" {
     cached_methods  = ["GET", "HEAD"]
 
     cache_policy_id = data.aws_cloudfront_cache_policy.caching_disabled.id
-
-    compress = true
+    compress        = true
   }
 
   restrictions {
@@ -188,7 +157,6 @@ resource "aws_cloudfront_distribution" "staging" {
   }
 }
 
-# CloudFront - Production
 resource "aws_cloudfront_distribution" "production" {
   enabled         = true
   is_ipv6_enabled = true
@@ -217,8 +185,7 @@ resource "aws_cloudfront_distribution" "production" {
     cached_methods  = ["GET", "HEAD"]
 
     cache_policy_id = data.aws_cloudfront_cache_policy.caching_disabled.id
-
-    compress = true
+    compress        = true
   }
 
   restrictions {
@@ -234,14 +201,6 @@ resource "aws_cloudfront_distribution" "production" {
   }
 }
 
-output "cloudfront_staging_domain" {
-  value = aws_cloudfront_distribution.staging.domain_name
-}
-
-output "cloudfront_production_domain" {
-  value = aws_cloudfront_distribution.production.domain_name
-}
-# CloudWatch - CPU alta em Staging
 resource "aws_cloudwatch_metric_alarm" "staging_cpu_high" {
   alarm_name          = "lacrei-staging-cpu-high"
   alarm_description   = "Alerta quando a CPU de Staging fica acima de 80%"
@@ -263,7 +222,6 @@ resource "aws_cloudwatch_metric_alarm" "staging_cpu_high" {
   }
 }
 
-# CloudWatch - CPU em Prod
 resource "aws_cloudwatch_metric_alarm" "production_cpu_high" {
   alarm_name          = "lacrei-production-cpu-high"
   alarm_description   = "Alerta quando a CPU de Prod fica acima de 80%"
@@ -283,4 +241,22 @@ resource "aws_cloudwatch_metric_alarm" "production_cpu_high" {
   tags = {
     Environment = "Production"
   }
+}
+
+output "ip_staging" {
+  value       = aws_instance.staging.public_ip
+  description = "IP Publico do ambiente de Staging"
+}
+
+output "ip_production" {
+  value       = aws_instance.production.public_ip
+  description = "IP Publico do ambiente de Producao"
+}
+
+output "cloudfront_staging_domain" {
+  value = aws_cloudfront_distribution.staging.domain_name
+}
+
+output "cloudfront_production_domain" {
+  value = aws_cloudfront_distribution.production.domain_name
 }
