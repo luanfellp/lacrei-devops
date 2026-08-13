@@ -1,221 +1,377 @@
 # Desafio DevOps - Lacrei Saúde
 
-Este repositório contém minha solução para o desafio técnico da vaga de voluntariado em DevOps na Lacrei Saúde.
+Solução desenvolvida para o desafio técnico de DevOps da Lacrei Saúde.
 
-O objetivo do projeto foi colocar em prática conceitos que venho estudando para minha transição para DevOps, principalmente infraestrutura como código, containers e automação de deploy.
+A aplicação é uma API Node.js containerizada com Docker e publicada em dois ambientes na AWS: Staging e Production. A infraestrutura foi criada com Terraform e o processo de build, teste e deploy é executado pelo GitHub Actions.
 
-A solução utiliza AWS, Terraform, Docker e GitHub Actions para criar dois ambientes separados e automatizar o processo de entrega da aplicação.
+## Ambientes
 
-## Arquitetura e ambientes
+| Ambiente | Endpoint |
+|---|---|
+| Staging | https://staging-api.luanmoura.com/status |
+| Production | https://api.luanmoura.com/status |
 
-A infraestrutura foi provisionada com **Terraform**, permitindo manter a configuração dos recursos versionada junto ao projeto e recriar os ambientes de forma padronizada.
+A rota `/status` retorna informações básicas da aplicação, incluindo ambiente, versão em execução, uptime e timestamp.
 
-A estrutura utilizada é composta por:
+Exemplo:
 
-* **Cloud:** AWS
-* **Staging:** instância EC2 `t2.micro` com Ubuntu 24.04 LTS
-* **Produção:** instância EC2 `t2.micro` com Ubuntu 24.04 LTS
-* **Containerização:** Docker
-* **Infraestrutura como código:** Terraform
+```json
+{
+  "status": "ok",
+  "environment": "production",
+  "version": "<commit-sha>",
+  "uptimeSeconds": 120,
+  "timestamp": "2026-08-13T20:00:00.000Z"
+}
+```
 
-Staging e Produção utilizam instâncias diferentes para manter os ambientes separados.
+## Arquitetura
 
-Durante a criação das EC2, utilizo o `user_data` do Terraform para executar a configuração inicial das máquinas. Esse script instala e habilita o Docker automaticamente, deixando as instâncias preparadas para executar a aplicação.
+A infraestrutura utiliza:
+
+- AWS EC2 para executar os containers
+- Docker para empacotar a aplicação
+- GitHub Container Registry (GHCR) para armazenar as imagens
+- CloudFront na frente das EC2
+- AWS Certificate Manager para TLS
+- CloudWatch para métricas e alarmes
+- Terraform para provisionamento
+- GitHub Actions para CI/CD
+
+O fluxo de acesso à aplicação é:
+
+```text
+Cliente
+  |
+  | HTTPS
+  v
+CloudFront
+  |
+  | HTTP
+  v
+EC2
+  |
+  v
+Container Docker
+  |
+  v
+Node.js :3000
+```
+
+O TLS termina no CloudFront. Entre o CloudFront e a EC2 o tráfego utiliza HTTP na porta 80.
+
+A porta 80 das instâncias não fica aberta diretamente para toda a internet. O Security Group utiliza a prefix list gerenciada pela AWS para permitir conexões de origem do CloudFront.
+
+Staging e Production utilizam instâncias EC2 diferentes.
+
+## Por que usei meu próprio domínio
+
+O desafio pedia HTTPS/TLS e também links públicos dos ambientes.
+
+Como eu já tinha um domínio disponível, preferi criar subdomínios específicos para o projeto em vez de entregar os ambientes utilizando diretamente os IPs públicos das EC2.
+
+Foram criados:
+
+```text
+staging-api.luanmoura.com
+api.luanmoura.com
+```
+
+Com isso consegui configurar um certificado no AWS Certificate Manager e utilizar HTTPS nos dois ambientes através do CloudFront.
+
+Além de atender ao requisito de TLS, essa escolha mantém o endereço utilizado para acessar a API separado do endereço da infraestrutura. Se uma instância ou distribuição precisar ser alterada, o endereço apresentado para quem consome a API pode continuar o mesmo.
+
+Também deixou mais clara a separação entre Staging e Production sem adicionar um serviço mais complexo apenas para o desafio.
+
+## Aplicação
+
+A aplicação foi feita em Node.js com Express.
+
+Para executar localmente:
+
+```bash
+npm ci
+npm start
+```
+
+A API fica disponível em:
+
+```text
+http://localhost:3000
+```
+
+Para validar o projeto:
+
+```bash
+npm run lint
+npm test
+```
+
+### Docker
+
+Build da imagem:
+
+```bash
+docker build -t lacrei-api .
+```
+
+Execução:
+
+```bash
+docker run --rm \
+  -p 3000:3000 \
+  -e APP_ENV=local \
+  -e APP_VERSION=dev \
+  lacrei-api
+```
+
+Teste:
+
+```bash
+curl http://localhost:3000/status
+```
+
+O container possui `HEALTHCHECK` utilizando a própria rota `/status` e executa a aplicação com usuário não-root.
 
 ## CI/CD
 
-O processo de build e deploy foi automatizado com **GitHub Actions**.
+O workflow é executado a cada push na branch `main`.
 
-A ideia da pipeline é fazer primeiro o deploy em Staging, validar se a aplicação está respondendo corretamente e, somente depois disso, continuar para Produção.
+O fluxo atual é:
 
-### Fluxo da pipeline
-
-```mermaid
-graph TD;
-    A[Push na branch main] --> B[Build da imagem Docker];
-    B --> C[Push para o GitHub Container Registry];
-    C --> D[Deploy em Staging];
-    D --> E[Acesso SSH na EC2 de Staging];
-    E --> F[Pull da imagem e execução do container];
-    F --> G{Validação HTTP /status};
-    G -- Sucesso --> H[Deploy em Produção];
-    G -- Falha --> I[Pipeline interrompida];
-    H --> J[Acesso SSH na EC2 de Produção];
-    J --> K[Pull da imagem e execução do container];
+```text
+Push na main
+     |
+     v
+Lint + testes
+     |
+     v
+Build da imagem Docker
+     |
+     v
+Push para GHCR
+     |
+     v
+Deploy em Staging
+     |
+     v
+Smoke test HTTPS
+     |
+     v
+Deploy em Production
+     |
+     v
+Smoke test HTTPS
 ```
 
-### Como o deploy funciona
+Se lint, testes, build ou validação de Staging falharem, o deploy de Production não acontece.
 
-1. **Build e Push**
+### Versionamento das imagens
 
-   O GitHub Actions cria uma imagem Docker da aplicação e envia essa imagem para o **GitHub Container Registry (GHCR)**.
+Cada build publica duas tags no GHCR:
 
-2. **Deploy em Staging**
+```text
+latest
+<commit-sha>
+```
 
-   A pipeline acessa a instância de Staging via SSH, remove o container anterior e inicia um novo container utilizando a imagem publicada.
+O deploy não depende da tag `latest`. A pipeline utiliza o SHA do commit:
 
-3. **Smoke Test**
+```text
+ghcr.io/luanfellp/lacrei-devops/lacrei-api:<commit-sha>
+```
 
-   Depois do deploy, a pipeline executa uma requisição com `curl` para a rota `/status`.
+Assim, Staging e Production recebem exatamente a mesma imagem produzida pelo pipeline.
 
-   Caso a aplicação retorne HTTP `200`, o workflow continua. Se a validação falhar, a execução é interrompida e o deploy em Produção não é realizado.
+O SHA também facilita identificar qual versão está em execução e permite voltar para uma imagem anterior em caso de problema.
 
-4. **Deploy em Produção**
+## Deploy
 
-   Após a validação em Staging, o mesmo processo de atualização do container é executado na instância de Produção.
+O deploy atual é feito via SSH pelo GitHub Actions.
 
-Esse fluxo é simples, mas já permite aplicar uma validação antes de promover a aplicação para o segundo ambiente.
+Os hosts, chave privada e passphrase utilizados pelo workflow são armazenados em GitHub Secrets e não fazem parte do repositório.
+
+Na EC2, o processo é basicamente:
+
+```text
+docker pull
+docker stop
+docker rm
+docker run
+```
+
+Depois de subir o container, o GitHub Actions acessa `/status` através do endereço HTTPS público.
+
+Em Staging, esse teste funciona como validação antes da promoção para Production.
 
 ## Segurança
 
-Mesmo sendo um ambiente criado para o desafio, procurei evitar colocar credenciais diretamente no repositório e limitar os acessos necessários para o funcionamento da solução.
+Algumas decisões tomadas para o desafio:
 
-### GitHub Secrets
+- chave privada SSH e passphrase ficam no GitHub Secrets
+- arquivos de chave privada, estados Terraform e arquivos `.env` são ignorados pelo Git
+- aplicação executa como usuário não-root dentro do container
+- headers básicos de segurança são adicionados pelo Helmet
+- HTTPS é obrigatório no acesso público
+- HTTP no CloudFront é redirecionado para HTTPS
+- TLS utiliza certificado do AWS Certificate Manager
+- porta 80 das EC2 aceita tráfego somente das origens do CloudFront
+- Staging e Production utilizam máquinas separadas
 
-Informações sensíveis utilizadas pela pipeline, principalmente a chave privada SSH, ficam armazenadas no **GitHub Secrets** e não são adicionadas diretamente aos arquivos versionados no repositório.
+### SSH
 
-### Security Groups
+A porta 22 continua disponível porque o modelo atual de deploy usa runners hospedados pelo GitHub Actions e conexão SSH com as EC2.
 
-As regras de rede das instâncias são declaradas no Terraform.
+Essa é uma limitação conhecida da solução atual.
 
-Foram liberadas somente as portas necessárias para o cenário atual:
+Uma evolução seria substituir esse acesso por AWS Systems Manager ou outro mecanismo de deploy que não dependa de uma porta SSH pública.
 
-* Porta `80` para acesso HTTP à aplicação
-* Porta `22` para administração e deploy via SSH
+Preferi manter o deploy simples para o escopo do desafio em vez de adicionar mais componentes somente para eliminar essa dependência.
 
-O acesso SSH é necessário porque, nesta implementação, o GitHub Actions realiza o deploy conectando diretamente nas instâncias.
+### CORS
 
-Em uma evolução do projeto, esse ponto poderia ser revisto para reduzir ainda mais a exposição da porta 22, utilizando alternativas como AWS Systems Manager ou outro mecanismo de deploy que não dependa de SSH público.
+Não configurei CORS porque a API entregue neste desafio não possui integração com um frontend executando em outra origem.
 
-### Separação dos ambientes
+Caso esse cenário seja necessário, a configuração deve permitir apenas as origens conhecidas da aplicação em vez de liberar acesso globalmente.
 
-Staging e Produção utilizam instâncias EC2 diferentes.
+## HTTPS
 
-Isso evita que o container ou os processos executados em Staging compartilhem diretamente os mesmos recursos da instância utilizada em Produção.
+O acesso público passa pelo CloudFront.
 
-### HTTPS
+As distribuições utilizam:
 
-Neste projeto, a aplicação está sendo acessada diretamente pelo endereço público da EC2 utilizando HTTP.
+```text
+HTTP -> redirect para HTTPS
+HTTPS -> certificado ACM
+CloudFront -> EC2 pela porta 80
+```
 
-Por ser um ambiente de laboratório e não possuir domínio configurado, não implementei TLS nesta etapa.
+O certificado é emitido pelo AWS Certificate Manager e os subdomínios apontam para suas respectivas distribuições do CloudFront.
 
-Em um cenário de produção, uma possível evolução seria adicionar um **Application Load Balancer**, configurar um domínio e utilizar certificados gerenciados pelo **AWS Certificate Manager (ACM)**.
-
-Nesse modelo, o ALB poderia receber as conexões HTTPS dos clientes e encaminhar as requisições para as instâncias da aplicação.
+O certificado ACM já existente é consultado pelo Terraform através de um `data source`, em vez de ser recriado a cada execução.
 
 ## Logs e monitoramento
 
-Para troubleshooting do ambiente atual, utilizo principalmente os recursos já disponíveis no GitHub Actions, Docker e AWS.
+Os logs de CI/CD ficam disponíveis diretamente nas execuções do GitHub Actions.
 
-### Logs da pipeline
-
-Cada execução do GitHub Actions mantém os logs das etapas de build e deploy.
-
-Isso permite verificar em qual etapa uma execução falhou e consultar a saída dos comandos executados pelo workflow.
-
-### Logs do container
-
-Na EC2, os logs da aplicação podem ser consultados através do Docker:
+Na EC2, os logs da aplicação podem ser consultados com:
 
 ```bash
 docker logs lacrei_api
 ```
 
-Esse recurso ajuda na investigação inicial de erros da aplicação ou problemas durante a inicialização do container.
+A aplicação também escreve eventos básicos de inicialização e encerramento no stdout do container.
 
-### Métricas da EC2
+### CloudWatch
 
-O Amazon CloudWatch disponibiliza métricas básicas das instâncias EC2, como utilização de CPU, tráfego de rede e verificações de status.
+As métricas padrão das EC2 ficam disponíveis no CloudWatch.
 
-Métricas adicionais, como utilização de espaço em disco e memória do sistema operacional, exigiriam configuração adicional, por exemplo através do CloudWatch Agent.
+Também foram criados alarmes de CPU para Staging e Production.
 
-### Possíveis melhorias
+O alarme entra em estado de alerta quando a média de utilização de CPU permanece acima de 80% por dois períodos de cinco minutos.
 
-Como evolução do projeto, seria possível centralizar os logs dos containers no CloudWatch e criar alarmes para algumas métricas importantes.
+Neste desafio o alarme não envia notificação.
 
-Um exemplo seria:
-
-```text
-Container -> CloudWatch Logs -> CloudWatch Alarm -> SNS -> Canal de notificação
-```
-
-Não implementei essa parte no escopo atual, mas seria um dos próximos passos para melhorar a observabilidade do ambiente.
+Uma evolução simples seria conectar os alarmes a um tópico SNS e enviar notificações por e-mail ou para algum canal utilizado pela equipe.
 
 ## Rollback
 
-As imagens Docker publicadas no GHCR podem ser utilizadas para manter versões diferentes da aplicação disponíveis.
+As imagens são identificadas pelo SHA do commit, então uma versão anterior pode ser utilizada novamente sem precisar gerar uma nova imagem.
 
-Para que o rollback seja previsível, a imagem precisa estar identificada por uma tag associada à versão ou ao commit que originou aquele build, em vez de depender somente de uma tag como `latest`.
-
-Em caso de problema em Produção, o processo seria:
-
-1. Identificar uma versão anterior que tenha funcionado corretamente.
-2. Localizar a tag correspondente no GHCR.
-3. Fazer o pull dessa imagem na instância de Produção.
-4. Remover o container com problema.
-5. Subir novamente a aplicação utilizando a imagem anterior.
+Primeiro é necessário localizar o SHA de uma execução anterior que estava funcionando.
 
 Exemplo:
 
-```bash
-docker pull ghcr.io/usuario/repositorio:<tag-anterior>
+```text
+<sha-anterior>
+```
 
-docker stop lacrei_api
-docker rm lacrei_api
+Depois de autenticar no GHCR, o rollback pode ser feito na EC2:
+
+```bash
+IMAGE=ghcr.io/luanfellp/lacrei-devops/lacrei-api
+TAG=<sha-anterior>
+
+docker pull $IMAGE:$TAG
+
+docker stop lacrei_api || true
+docker rm lacrei_api || true
 
 docker run -d \
-  --name lacrei_api \
   -p 80:3000 \
-  ghcr.io/usuario/repositorio:<tag-anterior>
+  --name lacrei_api \
+  --restart always \
+  -e APP_ENV=production \
+  -e APP_VERSION=$TAG \
+  $IMAGE:$TAG
 ```
 
-Uma melhoria futura seria adicionar ao próprio GitHub Actions um workflow manual de rollback, permitindo informar a tag da imagem que deve ser implantada.
-
-## Decisões técnicas e problemas encontrados
-
-### GitHub Container Registry
-
-Escolhi utilizar o **GitHub Container Registry (GHCR)** para armazenar as imagens Docker.
-
-Como o código e a pipeline já estão no GitHub, utilizar o GHCR simplificou o projeto e evitou a necessidade de configurar outro registry apenas para o desafio.
-
-### Autenticação SSH
-
-Durante os testes da pipeline, tive problemas na utilização da chave SSH pelo GitHub Actions.
-
-Como parte do troubleshooting, gerei novamente a chave RSA utilizando o formato PEM:
+Depois do rollback:
 
 ```bash
-ssh-keygen -t rsa -b 4096 -m PEM
+curl https://api.luanmoura.com/status
 ```
 
-Depois dessa alteração, a chave passou a ser aceita corretamente pelo processo utilizado no workflow.
+O campo `version` permite conferir o SHA que está rodando.
 
-Optei por registrar essa situação porque foi um problema encontrado durante a implementação e exigiu analisar os logs da pipeline, revisar a configuração da chave e testar uma alternativa até conseguir estabelecer a conexão.
+Atualmente o rollback é manual. Um próximo passo seria criar um workflow com `workflow_dispatch` que recebesse o SHA desejado e executasse esse procedimento automaticamente.
 
-## Tecnologias utilizadas
+## Terraform
 
-* AWS EC2
-* AWS Security Groups
-* Amazon CloudWatch
-* Terraform
-* Docker
-* GitHub Actions
-* GitHub Container Registry
-* Ubuntu Server 24.04 LTS
-* Shell Script
-* SSH
+A infraestrutura principal está definida no `main.tf`.
 
-## Melhorias futuras
+Antes de qualquer alteração:
 
-O projeto atende ao escopo atual, mas existem alguns pontos que eu consideraria como próximos passos:
+```bash
+terraform fmt
+terraform validate
+terraform plan
+```
 
-* Automatizar o rollback pelo GitHub Actions
-* Utilizar tags de imagem associadas ao commit
-* Centralizar logs da aplicação no CloudWatch
-* Criar alarmes de monitoramento
-* Implementar HTTPS com domínio, ACM e Load Balancer
-* Avaliar uma alternativa ao acesso SSH direto às instâncias
-* Separar os arquivos Terraform em módulos conforme a infraestrutura crescer
+Depois de revisar o plano:
 
-A intenção neste desafio foi manter a arquitetura simples o suficiente para entender cada componente e, ao mesmo tempo, aplicar conceitos que fazem parte de um fluxo básico de DevOps.
+```bash
+terraform apply
+```
+
+O `plan` é importante principalmente para evitar substituições não intencionais de EC2, Security Groups ou distribuições CloudFront.
+
+Alguns recursos externos, como o certificado ACM e a configuração DNS do domínio, precisam existir para que toda a configuração funcione.
+
+## Decisões tomadas durante o desenvolvimento
+
+### EC2 em vez de uma plataforma mais complexa
+
+Usei EC2 porque atende ao tamanho do desafio e permite mostrar de forma direta Docker, rede, deploy e separação entre ambientes.
+
+ECS ou Kubernetes também poderiam executar a aplicação, mas adicionariam componentes que não eram necessários para este cenário.
+
+### GHCR
+
+Escolhi o GitHub Container Registry porque o código e o pipeline já estão no GitHub.
+
+Assim foi possível utilizar o próprio `GITHUB_TOKEN` do workflow para publicar as imagens sem criar outro registry e outro conjunto de credenciais.
+
+### CloudFront
+
+O CloudFront foi adicionado principalmente para disponibilizar HTTPS nos endpoints e manter as EC2 como origem da aplicação.
+
+A porta HTTP das instâncias ficou restrita à prefix list de origens do CloudFront.
+
+### Imagem identificada pelo commit
+
+No início seria possível trabalhar apenas com `latest`, mas isso dificultaria saber exatamente o que estava rodando e faria o rollback depender de reconstruir uma versão anterior.
+
+Por isso o pipeline publica e utiliza também o SHA do commit.
+
+## Limitações e próximos passos
+
+Para uma evolução desta solução, eu consideraria:
+
+- substituir o deploy via SSH por AWS Systems Manager ou outro mecanismo sem acesso SSH público
+- automatizar o rollback pelo GitHub Actions
+- enviar os logs dos containers para CloudWatch Logs
+- adicionar SNS aos alarmes do CloudWatch
+- separar o Terraform em arquivos ou módulos caso a infraestrutura cresça
+
+Para o escopo atual, preferi manter poucos componentes e conseguir explicar e testar cada parte da solução.
