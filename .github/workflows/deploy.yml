@@ -8,14 +8,41 @@ on:
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}/lacrei-api
   CONTAINER_NAME: lacrei_api
+  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
+  validate:
+    name: Lint & Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v3
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Executar lint
+        run: npm run lint
+
+      - name: Executar testes
+        run: npm test
+
   build-and-push:
     name: Build & Push Docker Image
+    needs: validate
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
       packages: write
+
     steps:
       - name: Checkout do código
         uses: actions/checkout@v3
@@ -32,12 +59,19 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ env.IMAGE_NAME }}:latest
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
   deploy-staging:
     name: Deploy to Staging
     needs: build-and-push
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: read
+
     steps:
       - name: Acesso SSH e Deploy
         uses: appleboy/ssh-action@v1.0.0
@@ -46,22 +80,39 @@ jobs:
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            set -e
+            echo "Iniciando deploy em Staging"
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+            docker pull ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+
             docker stop ${{ env.CONTAINER_NAME }} || true
             docker rm ${{ env.CONTAINER_NAME }} || true
-            docker pull ${{ env.IMAGE_NAME }}:latest
-            docker run -d -p 80:3000 --name ${{ env.CONTAINER_NAME }} --restart always ${{ env.IMAGE_NAME }}:latest
+
+            docker run -d \
+              -p 80:3000 \
+              --name ${{ env.CONTAINER_NAME }} \
+              --restart always \
+              -e APP_ENV=staging \
+              -e APP_VERSION=${{ env.IMAGE_TAG }} \
+              ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
       - name: Validação do Deploy (Smoke Test)
         run: |
           echo "Aguardando container iniciar..."
           sleep 5
-          curl -f http://${{ secrets.STAGING_HOST }}/status || exit 1
+          curl --fail --retry 3 --retry-delay 3 \
+            http://${{ secrets.STAGING_HOST }}/status
 
   deploy-production:
     name: Deploy to Production
     needs: deploy-staging
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: read
+
     steps:
       - name: Acesso SSH e Deploy
         uses: appleboy/ssh-action@v1.0.0
@@ -70,8 +121,26 @@ jobs:
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            set -e
+            echo "Iniciando deploy em Produção"
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+            docker pull ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+
             docker stop ${{ env.CONTAINER_NAME }} || true
             docker rm ${{ env.CONTAINER_NAME }} || true
-            docker pull ${{ env.IMAGE_NAME }}:latest
-            docker run -d -p 80:3000 --name ${{ env.CONTAINER_NAME }} --restart always ${{ env.IMAGE_NAME }}:latest
+
+            docker run -d \
+              -p 80:3000 \
+              --name ${{ env.CONTAINER_NAME }} \
+              --restart always \
+              -e APP_ENV=production \
+              -e APP_VERSION=${{ env.IMAGE_TAG }} \
+              ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+
+      - name: Validação do Deploy em Produção
+        run: |
+          echo "Aguardando container iniciar..."
+          sleep 5
+          curl --fail --retry 3 --retry-delay 3 \
+            http://${{ secrets.PROD_HOST }}/status
