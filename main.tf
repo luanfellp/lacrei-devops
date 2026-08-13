@@ -123,3 +123,115 @@ output "ip_production" {
   value       = aws_instance.production.public_ip
   description = "IP Publico do ambiente de Producao"
 }
+
+# Certificado ACM já emitido
+data "aws_acm_certificate" "lacrei" {
+  domain      = "api.luanmoura.com"
+  statuses    = ["ISSUED"]
+  most_recent = true
+}
+
+# Cache desabilitado para a API
+data "aws_cloudfront_cache_policy" "caching_disabled" {
+  name = "Managed-CachingDisabled"
+}
+
+# CloudFront - Staging
+resource "aws_cloudfront_distribution" "staging" {
+  enabled         = true
+  is_ipv6_enabled = true
+  comment         = "Lacrei DevOps - Staging"
+  price_class     = "PriceClass_100"
+
+  aliases = ["staging-api.luanmoura.com"]
+
+  origin {
+    domain_name = aws_instance.staging.public_dns
+    origin_id   = "lacrei-staging-ec2"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "http-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
+  default_cache_behavior {
+    target_origin_id       = "lacrei-staging-ec2"
+    viewer_protocol_policy = "redirect-to-https"
+
+    allowed_methods = ["GET", "HEAD", "OPTIONS"]
+    cached_methods  = ["GET", "HEAD"]
+
+    cache_policy_id = data.aws_cloudfront_cache_policy.caching_disabled.id
+
+    compress = true
+  }
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+
+  viewer_certificate {
+    acm_certificate_arn      = data.aws_acm_certificate.lacrei.arn
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
+  }
+}
+
+# CloudFront - Production
+resource "aws_cloudfront_distribution" "production" {
+  enabled         = true
+  is_ipv6_enabled = true
+  comment         = "Lacrei DevOps - Production"
+  price_class     = "PriceClass_100"
+
+  aliases = ["api.luanmoura.com"]
+
+  origin {
+    domain_name = aws_instance.production.public_dns
+    origin_id   = "lacrei-production-ec2"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "http-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
+  default_cache_behavior {
+    target_origin_id       = "lacrei-production-ec2"
+    viewer_protocol_policy = "redirect-to-https"
+
+    allowed_methods = ["GET", "HEAD", "OPTIONS"]
+    cached_methods  = ["GET", "HEAD"]
+
+    cache_policy_id = data.aws_cloudfront_cache_policy.caching_disabled.id
+
+    compress = true
+  }
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+
+  viewer_certificate {
+    acm_certificate_arn      = data.aws_acm_certificate.lacrei.arn
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
+  }
+}
+
+output "cloudfront_staging_domain" {
+  value = aws_cloudfront_distribution.staging.domain_name
+}
+
+output "cloudfront_production_domain" {
+  value = aws_cloudfront_distribution.production.domain_name
+}

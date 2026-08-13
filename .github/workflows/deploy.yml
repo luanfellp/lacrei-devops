@@ -9,6 +9,8 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}/lacrei-api
   CONTAINER_NAME: lacrei_api
   IMAGE_TAG: ${{ github.sha }}
+  STAGING_URL: https://staging-api.luanmoura.com
+  PROD_URL: https://api.luanmoura.com
 
 jobs:
   validate:
@@ -103,7 +105,7 @@ jobs:
           echo "Aguardando container iniciar..."
           sleep 5
           curl --fail --retry 3 --retry-delay 3 \
-            http://${{ secrets.STAGING_HOST }}/status
+            ${{ env.STAGING_URL }}/status
 
   deploy-production:
     name: Deploy to Production
@@ -145,4 +147,4 @@ jobs:
           echo "Aguardando container iniciar..."
           sleep 5
           curl --fail --retry 3 --retry-delay 3 \
-            http://${{ secrets.PROD_HOST }}/status
+            ${{ env.PROD_URL }}/status
