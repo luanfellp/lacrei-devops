@@ -1,0 +1,26 @@
+# Node
+node_modules/
+coverage/
+npm-debug.log*
+
+# Variáveis de ambiente
+.env
+.env.*
+
+# Sistema operacional
+.DS_Store
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.*
+
+# Chaves privadas
+aws
+*.pem
+*.key
+
+# Arquivos temporários de editor
+*.swp
+*.swo
