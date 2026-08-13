@@ -79,6 +79,7 @@ jobs:
           host: ${{ secrets.STAGING_HOST }}
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          passphrase: ${{ secrets.SSH_KEY_PASSPHRASE }}
           script: |
             set -e
             echo "Iniciando deploy em Staging"
@@ -120,6 +121,7 @@ jobs:
           host: ${{ secrets.PROD_HOST }}
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          passphrase: ${{ secrets.SSH_KEY_PASSPHRASE }}
           script: |
             set -e
             echo "Iniciando deploy em Produção"
