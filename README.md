@@ -397,3 +397,8 @@ Para uma evolução desta solução, eu consideraria:
 - separar o Terraform em arquivos ou módulos caso a infraestrutura cresça
 
 Para o escopo atual, preferi manter poucos componentes e conseguir explicar e testar cada parte da solução.
+
+> **Status dos ambientes:** a infraestrutura pública de Staging e Production
+> foi desativada após a conclusão da avaliação para evitar custos desnecessários.
+> O código, a infraestrutura como código e o histórico do CI/CD permanecem
+> disponíveis neste repositório.
