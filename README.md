@@ -364,6 +364,28 @@ No início seria possível trabalhar apenas com `latest`, mas isso dificultaria 
 
 Por isso o pipeline publica e utiliza também o SHA do commit.
 
+## Problemas encontrados durante a implementação
+
+### Permissão para publicar imagens no GHCR
+
+Nas primeiras execuções do pipeline, o build da imagem funcionava, mas o push para o GitHub Container Registry falhava com erro de permissão (`permission_denied: write_package`).
+
+O problema estava nas permissões do pacote no GHCR. Ajustei o acesso do GitHub Actions ao package e mantive o uso do `GITHUB_TOKEN` para publicação das imagens.
+
+### Chave SSH com passphrase no deploy
+
+O deploy via SSH também falhou inicialmente porque a chave privada utilizada possui passphrase.
+
+A chave já estava armazenada no GitHub Secrets, mas o workflow precisava receber a passphrase separadamente. Adicionei esse valor como outro secret e configurei a action de SSH para utilizá-lo durante a conexão.
+
+### Alterações de infraestrutura com Terraform
+
+Durante alguns ajustes no Security Group, o `terraform plan` mostrou que uma alteração poderia causar a substituição de recursos que já estavam funcionando.
+
+Em vez de aplicar diretamente, revisei o plano e mantive a configuração existente quando a mudança era apenas cosmética.
+
+Reforçou a importância de revisar o `terraform plan` antes de executar um `apply`, principalmente em recursos que podem gerar substituições desnecessárias.
+
 ## Limitações e próximos passos
 
 Para uma evolução desta solução, eu consideraria:
